@@ -1,0 +1,22 @@
+{
+  // Minimal, explicit policy - deliberately matches Headscale's IMPLICIT
+  // default behavior with no policy at all (every registered device can
+  // reach every other device) rather than restricting anything new. Set
+  // 2026-10-24 to replace "no policy exists" (which was causing Headplane's
+  // "Failed to read the ACL policy for groups" error, and meant the
+  // network's actual access model existed nowhere as a reviewable file)
+  // with something real to tighten later.
+  //
+  // Headscale ACL groups need real, already-registered Headscale/Tailscale
+  // usernames - NOT Keycloak group names, those are two separate systems.
+  // Nobody has completed `tailscale up` against this server yet, so there
+  // are no real usernames to scope a tighter policy to. Revisit once
+  // people actually register devices.
+  "acls": [
+    {
+      "action": "accept",
+      "src": ["*"],
+      "dst": ["*:*"],
+    },
+  ],
+}

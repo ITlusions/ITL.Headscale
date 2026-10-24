@@ -1,0 +1,13 @@
+apiVersion: v2
+name: itl-headscale
+description: >-
+  Self-hosted Headscale control server for the ITL Talos cluster - a
+  Tailscale-compatible mesh VPN coordination server (open-source
+  reimplementation, not Tailscale Inc.'s own SaaS), with Keycloak OIDC for
+  device/user authentication. Pairs with ITL.Headscale.UI (Headplane) for
+  the admin web UI. Replaces the earlier ITL.Wireguard gateway design -
+  that chart used static peer configs with no connection-time auth;
+  Headscale gates every device join behind a real Keycloak login.
+type: application
+version: 0.1.0
+appVersion: "0.29.5"

@@ -1,0 +1,141 @@
+namespace:
+  create: true
+  name: itl-headscale
+
+image:
+  repository: headscale/headscale
+  tag: "v0.29.5"   # current as of 2026-10-23 per github.com/juanfont/headscale/releases - re-check before deploying if this sits unreleased for a while
+
+# Public hostname remote devices (and the OIDC login flow) connect to.
+# Fronted by the PUBLIC Traefik instance (see ITL.K8s/docs/1-cluster/1.4-ingress.md) -
+# this is deliberately different from ITL.Wireguard's design, where the
+# tunnel itself was raw UDP and couldn't go through an HTTP reverse proxy.
+# Headscale's client protocol IS HTTP(S) (long-lived connections, HTTP/2),
+# so it can sit behind Traefik like any other public service - but Headscale's
+# own docs note they don't officially test/support reverse proxies, so
+# watch for connection-drop issues under load and be ready to front it
+# directly via a LoadBalancer Service instead if that happens.
+serverUrl: "https://headscale.itlusions.com"
+
+# The tailnet's own address range, handed out to connected devices.
+# 100.64.0.0/10 is the standard Tailscale/Headscale CGNAT range - not an
+# arbitrary choice like ITL.Wireguard's 10.90.0.0/24 was, this is what
+# Tailscale clients are actually designed to expect by default. Missing
+# entirely until confirmed live 2026-10-24 ("no IPv4 or IPv6 prefix
+# configured, minimum one prefix is required") - the field existed in
+# templates/configmap.yaml referencing .Values.internalSubnet, but nothing
+# in this file ever actually defined it, so it silently rendered empty.
+internalSubnet: "100.64.0.0/10"
+
+service:
+  port: 8080
+  metricsPort: 9090
+
+ingress:
+  # On the PUBLIC Traefik instance - the whole point is remote (off-LAN)
+  # devices need to reach this to join the tailnet.
+  className: itl-traefik
+  host: headscale.itlusions.com
+  clusterIssuer: letsencrypt-issuer
+  tlsSecretName: headscale-itlusions-com-tls
+  # headscale.itlusions.com stays the one true server_url (embedded in every
+  # client's registration) - this is just making the .nl alias not fail
+  # with a scary "intercepted connection" warning. Confirmed live 2026-10-24:
+  # headscale.itlusions.nl already resolves (same dual-domain DNS pattern as
+  # the rest of this project) to the same public IP, but had no matching
+  # Ingress/cert, so Traefik served its default self-signed cert for it -
+  # which is exactly what triggered a real Tailscale client's "likely
+  # intercepted connection" health warning on first connect.
+  additionalHosts:
+    - headscale.itlusions.nl
+
+database:
+  # Headscale's own docs now call Postgres "highly discouraged, legacy only" -
+  # reversed from older guidance. SQLite on a persistent volume is the
+  # current recommendation, same pattern as ITL.Wireguard's /config PVC.
+  path: /var/lib/headscale/db.sqlite
+
+storage:
+  # ha-gen-lh, not ha-secure-lh: see ITL.Wireguard's values.yaml/README for
+  # why - ha-secure-lh has a broken Longhorn StorageClass parameter on this
+  # cluster (confirmed 2026-10-23), unrelated to this chart.
+  storageClassName: ha-gen-lh
+  size: 256Mi
+
+oidc:
+  # This gates DEVICE/USER login for `tailscale up --login-server=...` -
+  # separate from Headplane's own OIDC login for the admin UI (different
+  # KeycloakOIDCClient, see ITL.Headscale.UI).
+  issuer: "https://sts.itlusions.com/realms/itlusions"
+  # Secret must contain CLIENT_ID and CLIENT_SECRET keys.
+  clientSecretRef:
+    name: headscale-oidc-secret
+  # Restrict who can actually join the tailnet. Group must exist in Keycloak
+  # BEFORE this is live - this chart doesn't create it. Decided 2026-10-23:
+  # new dedicated group, not reused from an existing one and not a whole
+  # email domain.
+  allowedGroups:
+    - "/vpn-users"
+  scope:
+    - openid
+    - profile
+    - email
+
+keycloak:
+  # Set true to have this chart create the KeycloakOIDCClient CR - see
+  # ITL.AuthGateway's _keycloakoidcclient.yaml for the schema this is
+  # modeled on (same corrected KeycloakOIDCClient kind, not the stale
+  # KeycloakClient kind itl.website's chart incorrectly assumes).
+  enabled: true
+  keycloakCRName: itl-keycloak
+  realm: itlusions
+  clientId: headscale
+  namespace: itl-keycloak   # the Keycloak CR's own namespace, not itl-headscale
+  displayName: "Headscale"
+  redirectUris:
+    - "https://headscale.itlusions.com/oidc/callback"
+  webOrigins:
+    - "https://headscale.itlusions.com"
+  clientSecretRef:
+    name: headscale-oidc-secret
+    key: client-secret
+
+resources: {}
+
+# In-cluster Tailscale client acting as a subnet router - lets remote
+# tailnet clients ("on the road") reach cluster-internal resources and the
+# physical LAN, not just the Headscale server itself. Added 2026-10-24,
+# same architectural pattern as ITL.Wireguard's in-cluster gateway pod
+# (separate lifecycle from the Headscale server itself - its pod restarts
+# shouldn't flap this one's tailnet session, hence a dedicated Deployment,
+# not something bolted into the headscale container).
+subnetRouter:
+  enabled: true
+  image:
+    repository: tailscale/tailscale
+    tag: "v1.104.2"   # current stable as of 2026-10-24 per hub.docker.com/r/tailscale/tailscale/tags - re-check before deploying if this sits unreleased for a while
+  hostname: "itl-cluster-gateway"
+  # Secret must contain a Headscale preauth key (headscale preauthkeys
+  # create --user <id> --reusable --expiration <duration>) - this is a
+  # headless pod, can't do an interactive OIDC browser login like a real
+  # device does.
+  authKeySecretRef:
+    name: subnet-router-authkey
+    key: authkey
+  # Matches ITL.Wireguard's original allowedIPs design intent - the same
+  # four cluster-internal ranges plus the two extra VLANs and the LAN, see
+  # that chart's README for why each one is there. This is what actually
+  # makes "connect to network resources on the road" true, not just
+  # "reach the Headscale server."
+  advertiseRoutes:
+    - "10.244.0.0/16"   # pods
+    - "10.97.0.0/16"    # services, incl. the apiserver ClusterIP
+    - "10.99.100.0/29"  # nodes - kubectl + Talos API
+    - "10.99.99.0/24"   # MetalLB vlan99 pool
+    - "10.99.1.0/24"
+    - "10.99.2.0/24"
+    - "192.168.1.0/24"  # LAN
+  # No PVC - state lives in a Kubernetes Secret (TS_KUBE_SECRET, this
+  # image's own default when it detects it's running in Kubernetes), not
+  # a volume. See the RBAC in templates/subnet-router.yaml.
+  resources: {}

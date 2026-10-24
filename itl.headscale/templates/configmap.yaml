@@ -1,0 +1,98 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: headscale-config
+  namespace: {{ .Values.namespace.name }}
+data:
+  policy.hujson: |
+{{ .Files.Get "files/policy.hujson" | nindent 4 }}
+  config.yaml: |
+    server_url: {{ .Values.serverUrl | quote }}
+    listen_addr: 0.0.0.0:{{ .Values.service.port }}
+    metrics_listen_addr: 0.0.0.0:{{ .Values.service.metricsPort }}
+    # Traefik terminates TLS and sits in front of this pod - trust its
+    # forwarded headers. Scope this to the actual pod CIDR once confirmed;
+    # left as the pod CIDR documented in ITL.Wireguard's README for now.
+    trusted_proxies:
+      - "10.244.0.0/16"
+
+    database:
+      type: sqlite
+      sqlite:
+        path: {{ .Values.database.path | quote }}
+        write_ahead_log: true
+
+    noise:
+      private_key_path: /var/lib/headscale/noise_private.key
+
+    # file mode (not the default "database" mode) - confirmed live
+    # 2026-10-24: `headscale policy set` and the PUT /api/v1/policy REST
+    # endpoint both refused with "update is disabled for modes other than
+    # 'database'" against the unset default. File mode fits this chart's
+    # existing pattern better anyway (policy.hujson is a reviewable,
+    # version-controlled file - see files/policy.hujson - not a value
+    # hidden in the sqlite db).
+    #
+    # Top-level `policy:` block, NOT nested under `acl:` - first attempt
+    # used acl.policy_mode/acl.policy_path (inferred from the CLI's error
+    # message wording, which turned out to be descriptive text, not the
+    # real YAML path) and failed live with "reading policy from path ''".
+    # Confirmed correct structure against upstream's own config-example.yaml.
+    policy:
+      mode: file
+      path: /etc/headscale/policy.hujson
+
+    # Required explicitly as of Headscale 0.29.x - confirmed live
+    # 2026-10-24: omitting this block entirely crash-loops the pod with
+    # "dns.nameservers.global must be set when dns.override_local_dns is
+    # true" (its internal default has override_local_dns: true with no
+    # default nameservers, which fails validation). override_local_dns:
+    # false is the safer default - MagicDNS still resolves tailnet names,
+    # but Headscale doesn't take over each client's general DNS resolution.
+    #
+    # A full-override push of the Pi-hole (10.99.2.10) as every client's
+    # global DNS was tried and reverted same day - works, but the subnet
+    # router being a tailnet client itself raised a real question (it
+    # turned out unaffected, CorpDNS:false on that node already) and the
+    # single-point-of-failure tradeoff (Pi-hole down = DNS down tailnet-wide)
+    # wasn't worth committing to yet. Revisit deliberately, not by accident.
+    dns:
+      magic_dns: true
+      base_domain: ts.itlusions.com
+      override_local_dns: false
+
+    # Also required explicitly, also missing until confirmed live 2026-10-24
+    # ("no IPv4 or IPv6 prefix configured") - this is what internalSubnet in
+    # values.yaml was always meant to wire in; it just never actually got
+    # referenced anywhere in this template until now.
+    prefixes:
+      v4: {{ .Values.internalSubnet | quote }}
+
+    oidc:
+      only_start_if_oidc_is_available: true
+      issuer: {{ .Values.oidc.issuer | quote }}
+      client_id: {{ required "oidc.keycloakClientId is required once the KeycloakOIDCClient exists - see keycloak.clientId" .Values.keycloak.clientId | quote }}
+      client_secret_path: /etc/headscale/oidc/client-secret
+      scope:
+        {{- toYaml .Values.oidc.scope | nindent 8 }}
+      {{- if .Values.oidc.allowedGroups }}
+      allowed_groups:
+        {{- toYaml .Values.oidc.allowedGroups | nindent 8 }}
+      {{- end }}
+      pkce:
+        enabled: true
+        method: S256
+
+    # Relies on Tailscale's own public DERP relay servers for NAT traversal
+    # fallback, rather than self-hosting one - simplest working default.
+    # Revisit if traffic volume/privacy requirements justify running our own.
+    derp:
+      server:
+        enabled: false
+      urls:
+        - https://controlplane.tailscale.com/derpmap/default
+      auto_update_enabled: true
+      update_frequency: 24h
+
+    log:
+      level: info

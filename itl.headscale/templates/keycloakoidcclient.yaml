@@ -1,0 +1,26 @@
+{{- if .Values.keycloak.enabled }}
+apiVersion: k8s.keycloak.org/v2alpha1
+kind: KeycloakOIDCClient
+metadata:
+  name: {{ .Values.keycloak.clientId }}
+  namespace: {{ .Values.keycloak.namespace }}
+  labels:
+    app.kubernetes.io/name: headscale
+spec:
+  keycloakCRName: {{ .Values.keycloak.keycloakCRName }}
+  realm: {{ .Values.keycloak.realm }}
+  client:
+    displayName: {{ .Values.keycloak.displayName | quote }}
+    description: "Headscale mesh VPN - device/user login for `tailscale up`"
+    enabled: true
+    loginFlows: ["STANDARD"]
+    redirectUris:
+      {{- toYaml .Values.keycloak.redirectUris | nindent 6 }}
+    webOrigins:
+      {{- toYaml .Values.keycloak.webOrigins | nindent 6 }}
+    auth:
+      method: client-secret
+      secretRef:
+        name: {{ .Values.keycloak.clientSecretRef.name }}
+        key: {{ .Values.keycloak.clientSecretRef.key | default "client-secret" }}
+{{- end }}

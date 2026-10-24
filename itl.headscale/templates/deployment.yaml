@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: headscale
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: headscale
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate   # SQLite on a single RWO volume - no rolling update
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: headscale
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: headscale
+      annotations:
+        # Without this, a ConfigMap-only change never triggers a rollout -
+        # confirmed live 2026-10-24: fixing config.yaml twice in a row left
+        # the original crash-looping pod running both times, since nothing
+        # about the pod template itself had changed.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      containers:
+        - name: headscale
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          args: ["serve"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+            - name: metrics
+              containerPort: {{ .Values.service.metricsPort }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/headscale/config.yaml
+              subPath: config.yaml
+              readOnly: true
+            - name: config
+              mountPath: /etc/headscale/policy.hujson
+              subPath: policy.hujson
+              readOnly: true
+            - name: oidc-secret
+              mountPath: /etc/headscale/oidc
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/headscale
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+          resources:
+            {{- toYaml (.Values.resources | default dict) | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: headscale-config
+        - name: oidc-secret
+          secret:
+            secretName: {{ .Values.oidc.clientSecretRef.name }}
+            items:
+              - key: client-secret
+                path: client-secret
+        - name: data
+          persistentVolumeClaim:
+            claimName: headscale-data

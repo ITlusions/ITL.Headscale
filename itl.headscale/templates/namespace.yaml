@@ -1,0 +1,14 @@
+{{- if .Values.namespace.create }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.namespace.name }}
+  {{- if .Values.subnetRouter.enabled }}
+  labels:
+    # The headscale server pod itself still doesn't need this (it's just an
+    # HTTP server, no interfaces of its own) - but the subnet-router pod
+    # added 2026-10-24 does (NET_ADMIN, same requirement ITL.Wireguard had),
+    # and PodSecurity is enforced per-namespace, not per-pod.
+    pod-security.kubernetes.io/enforce: privileged
+  {{- end }}
+{{- end }}

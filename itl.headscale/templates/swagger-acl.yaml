@@ -1,0 +1,51 @@
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: headscale-docs-acl
+  namespace: {{ .Values.namespace.name }}
+spec:
+  ipAllowList:
+    # Same ranges as longhorn-acl (longhorn-system) - the existing proven
+    # pattern on this cluster for "public Traefik instance, IP-restricted to
+    # internal clients only". /swagger isn't used by any Tailscale client -
+    # only the actual node-registration/OIDC/DERP endpoints need to stay
+    # public - so this just reduces unauthenticated API-shape reconnaissance,
+    # confirmed 2026-10-24 the real endpoints already require auth anyway.
+    sourceRange:
+      - 127.0.0.1/32
+      - 10.99.1.0/24
+      - 10.99.2.0/24
+      - 10.99.99.0/24
+      - 10.99.100.0/24
+      - 192.168.1.0/24
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: headscale-swagger
+  namespace: {{ .Values.namespace.name }}
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web, websecure
+    traefik.ingress.kubernetes.io/router.middlewares: "{{ .Values.namespace.name }}-headscale-docs-acl@kubernetescrd"
+    # Must outrank the main Ingress's "/" catch-all rule, which would
+    # otherwise also match "/swagger" and - whichever Traefik picks between
+    # two equal-specificity routers - risk serving it unrestricted.
+    traefik.ingress.kubernetes.io/router.priority: "100"
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.clusterIssuer }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host }}
+      secretName: {{ .Values.ingress.tlsSecretName }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /swagger
+            pathType: Prefix
+            backend:
+              service:
+                name: headscale
+                port:
+                  number: {{ .Values.service.port }}
